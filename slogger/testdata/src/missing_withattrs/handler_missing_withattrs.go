@@ -1,4 +1,4 @@
-package a
+package missing_withattrs
 
 import (
 	"context"
