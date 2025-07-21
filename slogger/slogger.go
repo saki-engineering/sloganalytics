@@ -5,50 +5,63 @@ import (
 	"go/importer"
 	"go/types"
 	"log"
+	"reflect"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-const doc = "slogger is ..."
+const doc = "slogger checks slog.Handler implementations for missing required methods"
 
-// Analyzer is ...
-var Analyzer = &analysis.Analyzer{
-	Name: "slogger",
-	Doc:  doc,
-	Run:  run,
+// HandlerInfo holds information about a struct that implements slog.Handler
+type HandlerInfo struct {
+	Name     string
+	TypeSpec *ast.TypeSpec
+	Named    *types.Named
+}
+
+// HandlerInfos represents a slice of HandlerInfo
+type HandlerInfos []*HandlerInfo
+
+// HandlerFinderAnalyzer finds structs that implement slog.Handler interface
+var HandlerFinderAnalyzer = &analysis.Analyzer{
+	Name: "handlerfinder",
+	Doc:  "finds structs that implement slog.Handler interface",
+	Run:  handlerFinderRun,
 	Requires: []*analysis.Analyzer{
 		inspect.Analyzer,
 	},
+	ResultType: reflect.TypeOf(HandlerInfos{}),
 }
 
-func run(pass *analysis.Pass) (any, error) {
+// Analyzer checks if the found handlers implement required methods
+var Analyzer = &analysis.Analyzer{
+	Name: "slogger",
+	Doc:  doc,
+	Run:  methodValidatorRun,
+	Requires: []*analysis.Analyzer{
+		HandlerFinderAnalyzer,
+	},
+}
+
+func handlerFinderRun(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	var handlers HandlerInfos
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 	}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		// n ast.Nodeをprint
-		// &{<nil> TraceHandler <nil> 0 0xc006aa9d10 <nil>}
-
 		ts, ok := n.(*ast.TypeSpec)
 		if !ok {
 			return
 		}
-		// _, ok = ts.Type.(*ast.StructType)
-		// if !ok {
-		// 	return
-		// }
 
-		// // 型名
 		typeName := ts.Name.Name
 
 		// 型オブジェクトを取得
-		// objをprint
-		// type a.TraceHandler struct{log/slog.Handler}
 		obj := pass.TypesInfo.Defs[ts.Name]
 		if obj == nil {
 			return
@@ -90,23 +103,34 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 		}
 		
-		// slog.Handlerを実装しようとしていない場合はスキップ
-		if !hasEmbeddedHandler {
-			return
+		// slog.Handlerを実装しようとしている場合、HandlerInfoに追加
+		if hasEmbeddedHandler {
+			log.Printf("%s has embedded slog.Handler", typeName)
+			handlers = append(handlers, &HandlerInfo{
+				Name:     typeName,
+				TypeSpec: ts,
+				Named:    named,
+			})
 		}
-		
-		log.Printf("%s has embedded slog.Handler", typeName)
+	})
 
+	return handlers, nil
+}
+
+func methodValidatorRun(pass *analysis.Pass) (any, error) {
+	handlers := pass.ResultOf[HandlerFinderAnalyzer].(HandlerInfos)
+
+	for _, handler := range handlers {
 		// WithAttrsメソッドを持っているか
 		hasWithAttrs := false
-		for i := 0; i < named.NumMethods(); i++ {
+		for i := 0; i < handler.Named.NumMethods(); i++ {
 			// メソッド名
-			if named.Method(i).Name() != "WithAttrs" {
+			if handler.Named.Method(i).Name() != "WithAttrs" {
 				continue
 			}
 
 			// 第一引数
-			sig := named.Method(i).Signature()
+			sig := handler.Named.Method(i).Signature()
 			paramType := sig.Params().At(0).Type()
 			t, ok := paramType.(*types.Slice)
 			if !ok {
@@ -148,14 +172,14 @@ func run(pass *analysis.Pass) (any, error) {
 
 		// WithGroupメソッドを持っているか
 		hasWithGroup := false
-		for i := 0; i < named.NumMethods(); i++ {
+		for i := 0; i < handler.Named.NumMethods(); i++ {
 			// メソッド名
-			if named.Method(i).Name() != "WithGroup" {
+			if handler.Named.Method(i).Name() != "WithGroup" {
 				continue
 			}
 
 			// 第一引数（string）
-			sig := named.Method(i).Signature()
+			sig := handler.Named.Method(i).Signature()
 			if sig.Params().Len() != 1 {
 				continue
 			}
@@ -185,12 +209,12 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 
 		if !hasWithAttrs {
-			pass.Reportf(ts.Pos(), "%s implements slog.Handler but does not implement WithAttrs method", typeName)
+			pass.Reportf(handler.TypeSpec.Pos(), "%s implements slog.Handler but does not implement WithAttrs method", handler.Name)
 		}
 		if !hasWithGroup {
-			pass.Reportf(ts.Pos(), "%s implements slog.Handler but does not implement WithGroup method", typeName)
+			pass.Reportf(handler.TypeSpec.Pos(), "%s implements slog.Handler but does not implement WithGroup method", handler.Name)
 		}
-	})
+	}
 
 	return nil, nil
 }
