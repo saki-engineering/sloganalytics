@@ -21,6 +21,10 @@ func TestAnalyzer(t *testing.T) {
 			name:    "missing WithAttrs method",
 			pkgPath: "missing_withattrs",
 		},
+		{
+			name:    "missing WithGroup method",
+			pkgPath: "missing_withgroup",
+		},
 	}
 
 	for _, tt := range tests {

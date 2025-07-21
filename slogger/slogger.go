@@ -146,8 +146,49 @@ func run(pass *analysis.Pass) (any, error) {
 			break
 		}
 
+		// WithGroupメソッドを持っているか
+		hasWithGroup := false
+		for i := 0; i < named.NumMethods(); i++ {
+			// メソッド名
+			if named.Method(i).Name() != "WithGroup" {
+				continue
+			}
+
+			// 第一引数（string）
+			sig := named.Method(i).Signature()
+			if sig.Params().Len() != 1 {
+				continue
+			}
+			paramType := sig.Params().At(0).Type()
+			basicType, ok := paramType.(*types.Basic)
+			if !ok || basicType.Kind() != types.String {
+				continue
+			}
+
+			// 戻り値（slog.Handler）
+			if sig.Results().Len() != 1 {
+				continue
+			}
+			rslType, ok := sig.Results().At(0).Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			if rslType.Obj().Pkg() == nil || rslType.Obj().Pkg().Path() != "log/slog" {
+				continue
+			}
+			if rslType.Obj().Name() != "Handler" {
+				continue
+			}
+
+			hasWithGroup = true
+			break
+		}
+
 		if !hasWithAttrs {
 			pass.Reportf(ts.Pos(), "%s implements slog.Handler but does not implement WithAttrs method", typeName)
+		}
+		if !hasWithGroup {
+			pass.Reportf(ts.Pos(), "%s implements slog.Handler but does not implement WithGroup method", typeName)
 		}
 	})
 
