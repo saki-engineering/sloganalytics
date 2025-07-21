@@ -25,6 +25,10 @@ func TestAnalyzer(t *testing.T) {
 			name:    "missing WithGroup method",
 			pkgPath: "missing_withgroup",
 		},
+		{
+			name:    "complete handler implementation",
+			pkgPath: "complete_handler",
+		},
 	}
 
 	for _, tt := range tests {
