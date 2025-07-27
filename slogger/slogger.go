@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/importer"
 	"go/types"
-	"log"
 	"reflect"
 
 	"golang.org/x/tools/go/analysis"
@@ -49,6 +48,33 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	var handlers HandlerInfos
 
+	// slog.Handlerインターフェースの型を取得
+	// pass.TypesInfoから直接取得する方法を試す
+	var handlerInterface *types.Interface
+	
+	// パッケージ内でslog.Handlerの使用を見つける
+	for _, obj := range pass.TypesInfo.Uses {
+		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == "log/slog" && obj.Name() == "Handler" {
+			if iface, ok := obj.Type().Underlying().(*types.Interface); ok {
+				handlerInterface = iface
+				break
+			}
+		}
+	}
+	
+	// 見つからない場合はimporterで取得
+	if handlerInterface == nil {
+		slogPkg, err := importer.Default().Import("log/slog")
+		if err != nil {
+			return nil, err
+		}
+		handlerObj := slogPkg.Scope().Lookup("Handler")
+		if handlerObj == nil {
+			return nil, nil
+		}
+		handlerInterface = handlerObj.Type().Underlying().(*types.Interface)
+	}
+
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 	}
@@ -72,40 +98,10 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		// slog.Handlerを取得
-		_, err := importer.Default().Import("log/slog")
-		if err != nil {
-			log.Printf("failed to import log/slog: %v", err)
-			return
-		}
-		
-		// まず、slog.Handlerを実装しようとしているかをチェック
-		// （埋め込みフィールドがある）
-		hasEmbeddedHandler := false
-		
-		// 構造体のフィールドをチェック
-		if structType, ok := named.Underlying().(*types.Struct); ok {
-			log.Printf("Checking %d fields in struct %s", structType.NumFields(), typeName)
-			for i := 0; i < structType.NumFields(); i++ {
-				field := structType.Field(i)
-				log.Printf("  Field %d: name=%s, embedded=%v, type=%v", i, field.Name(), field.Embedded(), field.Type())
-				if field.Embedded() {
-					if namedType, ok := field.Type().(*types.Named); ok {
-						log.Printf("    Named type: pkg=%v, name=%s", namedType.Obj().Pkg(), namedType.Obj().Name())
-						if namedType.Obj().Pkg() != nil && 
-						   namedType.Obj().Pkg().Path() == "log/slog" && 
-						   namedType.Obj().Name() == "Handler" {
-							hasEmbeddedHandler = true
-							break
-						}
-					}
-				}
-			}
-		}
-		
-		// slog.Handlerを実装しようとしている場合、HandlerInfoに追加
-		if hasEmbeddedHandler {
-			log.Printf("%s has embedded slog.Handler", typeName)
+		// types.Implementsを使用してslog.Handlerインターフェースを実装しているかチェック
+		// 値型とポインタ型の両方をチェック
+		pointerType := types.NewPointer(named)
+		if types.Implements(named, handlerInterface) || types.Implements(pointerType, handlerInterface) {
 			handlers = append(handlers, &HandlerInfo{
 				Name:     typeName,
 				TypeSpec: ts,
@@ -134,35 +130,28 @@ func methodValidatorRun(pass *analysis.Pass) (any, error) {
 			paramType := sig.Params().At(0).Type()
 			t, ok := paramType.(*types.Slice)
 			if !ok {
-				log.Println("slice")
 				continue
 			}
 			elem, ok := t.Elem().(*types.Named)
 			if !ok {
-				log.Println("elem")
 				continue
 			}
 			if elem.Obj().Pkg() == nil {
-				log.Println("pkg is nil")
 				continue
 			}
 			if elem.Obj().Pkg().Path() != "log/slog" {
-				log.Printf("pkg path is %s, not log/slog", elem.Obj().Pkg().Path())
 				continue
 			}
 			if elem.Obj().Name() != "Attr" {
-				log.Printf("elem name is %s, not Attr", elem.Obj().Name())
 				continue
 			}
 
 			// 戻り値
 			rslType := sig.Results().At(0).Type().(*types.Named)
 			if rslType.Obj().Pkg().Path() != "log/slog" {
-				log.Printf("pkg path is %s, not log/slog", rslType.Obj().Pkg().Path())
 				continue
 			}
 			if rslType.Obj().Name() != "Handler" {
-				log.Printf("elem name is %s, not Handler", rslType.Obj().Name())
 				continue
 			}
 
