@@ -2,7 +2,7 @@ package slogger
 
 import (
 	"go/ast"
-	"go/importer"
+	"go/token"
 	"go/types"
 	"reflect"
 
@@ -15,9 +15,9 @@ const doc = "slogger checks slog.Handler implementations for missing required me
 
 // HandlerInfo holds information about a struct that implements slog.Handler
 type HandlerInfo struct {
-	Name     string
-	TypeSpec *ast.TypeSpec
-	Named    *types.Named
+	Name  string
+	Pos   token.Pos
+	Named *types.Named
 }
 
 // HandlerInfos represents a slice of HandlerInfo
@@ -51,28 +51,19 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 	// slog.Handlerインターフェースの型を取得
 	// pass.TypesInfoから直接取得する方法を試す
 	var handlerInterface *types.Interface
-	
+
 	// パッケージ内でslog.Handlerの使用を見つける
-	for _, obj := range pass.TypesInfo.Uses {
-		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == "log/slog" && obj.Name() == "Handler" {
+	for _, p := range pass.Pkg.Imports() {
+		if p.Path() == "log/slog" {
+			obj := p.Scope().Lookup("Handler")
 			if iface, ok := obj.Type().Underlying().(*types.Interface); ok {
 				handlerInterface = iface
 				break
 			}
 		}
 	}
-	
-	// 見つからない場合はimporterで取得
 	if handlerInterface == nil {
-		slogPkg, err := importer.Default().Import("log/slog")
-		if err != nil {
-			return nil, err
-		}
-		handlerObj := slogPkg.Scope().Lookup("Handler")
-		if handlerObj == nil {
-			return nil, nil
-		}
-		handlerInterface = handlerObj.Type().Underlying().(*types.Interface)
+		return nil, nil
 	}
 
 	nodeFilter := []ast.Node{
@@ -85,10 +76,10 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		typeName := ts.Name.Name
+		tsIdent := ts.Name
 
 		// 型オブジェクトを取得
-		obj := pass.TypesInfo.Defs[ts.Name]
+		obj := pass.TypesInfo.ObjectOf(tsIdent)
 		if obj == nil {
 			return
 		}
@@ -103,9 +94,9 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 		pointerType := types.NewPointer(named)
 		if types.Implements(named, handlerInterface) || types.Implements(pointerType, handlerInterface) {
 			handlers = append(handlers, &HandlerInfo{
-				Name:     typeName,
-				TypeSpec: ts,
-				Named:    named,
+				Name:  tsIdent.Name,
+				Pos:   tsIdent.Pos(),
+				Named: named,
 			})
 		}
 	})
@@ -119,14 +110,14 @@ func methodValidatorRun(pass *analysis.Pass) (any, error) {
 	for _, handler := range handlers {
 		// WithAttrsメソッドを持っているか
 		hasWithAttrs := false
-		for i := 0; i < handler.Named.NumMethods(); i++ {
+		for m := range handler.Named.Methods() {
 			// メソッド名
-			if handler.Named.Method(i).Name() != "WithAttrs" {
+			if m.Name() != "WithAttrs" {
 				continue
 			}
 
 			// 第一引数
-			sig := handler.Named.Method(i).Signature()
+			sig := m.Signature()
 			paramType := sig.Params().At(0).Type()
 			t, ok := paramType.(*types.Slice)
 			if !ok {
@@ -161,14 +152,14 @@ func methodValidatorRun(pass *analysis.Pass) (any, error) {
 
 		// WithGroupメソッドを持っているか
 		hasWithGroup := false
-		for i := 0; i < handler.Named.NumMethods(); i++ {
+		for m := range handler.Named.Methods() {
 			// メソッド名
-			if handler.Named.Method(i).Name() != "WithGroup" {
+			if m.Name() != "WithGroup" {
 				continue
 			}
 
 			// 第一引数（string）
-			sig := handler.Named.Method(i).Signature()
+			sig := m.Signature()
 			if sig.Params().Len() != 1 {
 				continue
 			}
@@ -198,10 +189,10 @@ func methodValidatorRun(pass *analysis.Pass) (any, error) {
 		}
 
 		if !hasWithAttrs {
-			pass.Reportf(handler.TypeSpec.Pos(), "%s implements slog.Handler but does not implement WithAttrs method", handler.Name)
+			pass.Reportf(handler.Pos, "%s implements slog.Handler but does not implement WithAttrs method", handler.Name)
 		}
 		if !hasWithGroup {
-			pass.Reportf(handler.TypeSpec.Pos(), "%s implements slog.Handler but does not implement WithGroup method", handler.Name)
+			pass.Reportf(handler.Pos, "%s implements slog.Handler but does not implement WithGroup method", handler.Name)
 		}
 	}
 
