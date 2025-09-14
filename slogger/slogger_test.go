@@ -12,7 +12,7 @@ import (
 // TestAnalyzer is a test for Analyzer.
 func TestAnalyzer(t *testing.T) {
 	testdata := testutil.WithModules(t, analysistest.TestData(), nil)
-	
+
 	tests := []struct {
 		name    string
 		pkgPath string
@@ -28,6 +28,10 @@ func TestAnalyzer(t *testing.T) {
 		{
 			name:    "complete handler implementation",
 			pkgPath: "complete_handler",
+		},
+		{
+			name:    "missing both WithAttrs and WithGroup methods",
+			pkgPath: "missing_both",
 		},
 	}
 

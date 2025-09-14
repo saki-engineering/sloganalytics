@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"reflect"
 
+	"github.com/gostaticanalysis/analysisutil"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -107,85 +108,37 @@ func handlerFinderRun(pass *analysis.Pass) (any, error) {
 func methodValidatorRun(pass *analysis.Pass) (any, error) {
 	handlers := pass.ResultOf[HandlerFinderAnalyzer].(HandlerInfos)
 
+	slogHandlerType := analysisutil.TypeOf(pass, "log/slog", "Handler").Underlying().(*types.Interface)
+	var (
+		withAttrFunc  *types.Func
+		withGroupFunc *types.Func
+	)
+	for m := range slogHandlerType.Methods() {
+		switch m.Name() {
+		case "WithAttrs":
+			withAttrFunc = m
+		case "WithGroup":
+			withGroupFunc = m
+		}
+	}
+
 	for _, handler := range handlers {
 		// WithAttrsメソッドを持っているか
 		hasWithAttrs := false
 		for m := range handler.Named.Methods() {
-			// メソッド名
-			if m.Name() != "WithAttrs" {
-				continue
+			if m.Name() == "WithAttrs" && types.Identical(m.Signature(), withAttrFunc.Signature()) {
+				hasWithAttrs = true
+				break
 			}
-
-			// 第一引数
-			sig := m.Signature()
-			paramType := sig.Params().At(0).Type()
-			t, ok := paramType.(*types.Slice)
-			if !ok {
-				continue
-			}
-			elem, ok := t.Elem().(*types.Named)
-			if !ok {
-				continue
-			}
-			if elem.Obj().Pkg() == nil {
-				continue
-			}
-			if elem.Obj().Pkg().Path() != "log/slog" {
-				continue
-			}
-			if elem.Obj().Name() != "Attr" {
-				continue
-			}
-
-			// 戻り値
-			rslType := sig.Results().At(0).Type().(*types.Named)
-			if rslType.Obj().Pkg().Path() != "log/slog" {
-				continue
-			}
-			if rslType.Obj().Name() != "Handler" {
-				continue
-			}
-
-			hasWithAttrs = true
-			break
 		}
 
 		// WithGroupメソッドを持っているか
 		hasWithGroup := false
 		for m := range handler.Named.Methods() {
-			// メソッド名
-			if m.Name() != "WithGroup" {
-				continue
+			if m.Name() == "WithGroup" && types.Identical(m.Signature(), withGroupFunc.Signature()) {
+				hasWithGroup = true
+				break
 			}
-
-			// 第一引数（string）
-			sig := m.Signature()
-			if sig.Params().Len() != 1 {
-				continue
-			}
-			paramType := sig.Params().At(0).Type()
-			basicType, ok := paramType.(*types.Basic)
-			if !ok || basicType.Kind() != types.String {
-				continue
-			}
-
-			// 戻り値（slog.Handler）
-			if sig.Results().Len() != 1 {
-				continue
-			}
-			rslType, ok := sig.Results().At(0).Type().(*types.Named)
-			if !ok {
-				continue
-			}
-			if rslType.Obj().Pkg() == nil || rslType.Obj().Pkg().Path() != "log/slog" {
-				continue
-			}
-			if rslType.Obj().Name() != "Handler" {
-				continue
-			}
-
-			hasWithGroup = true
-			break
 		}
 
 		if !hasWithAttrs {
